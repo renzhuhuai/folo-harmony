@@ -1,0 +1,112 @@
+name: Build HAP
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: build-hap-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CI_IMAGE: ghcr.io/dalongzhuazi/harmonyos-ci:api26r
+  HAP_SIGN_TOOL: /opt/command-line-tools/sdk/default/openharmony/toolchains/lib/hap-sign-tool.jar
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/dalongzhuazi/harmonyos-ci:api26r
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Strip machine-local signing config
+        run: python3 .github/scripts/strip_signing.py build-profile.json5
+
+      - name: Install dependencies
+        run: ohpm install --all
+
+      - name: Build HAP (debug)
+        run: hvigorw assembleHap --mode module -p product=default -p buildMode=debug --no-daemon --stacktrace
+
+      - name: Collect HAP
+        run: |
+          set -eu
+          mkdir -p dist
+          find . -type f -name '*.hap' -path '*/outputs/*' \
+            -not -path './oh_modules/*' -not -path './node_modules/*' \
+            -exec cp -v {} dist/ \;
+          ls -l dist
+
+      - name: Sign HAP (when signing secrets are configured)
+        id: sign
+        env:
+          CERT_B64: ${{ secrets.SIGNING_CERT }}
+          PROFILE_B64: ${{ secrets.SIGNING_PROFILE }}
+          KEY_B64: ${{ secrets.SIGNING_KEY }}
+          KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          KEYSTORE_PWD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PWD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -eu
+          if [ -z "$CERT_B64" ] || [ -z "$PROFILE_B64" ] || [ -z "$KEY_B64" ]; then
+            echo "Signing secrets are not configured - publishing an unsigned HAP."
+            exit 0
+          fi
+          mkdir -p /tmp/materials
+          printf '%s' "$CERT_B64" | base64 -d > /tmp/materials/cert.cer
+          printf '%s' "$PROFILE_B64" | base64 -d > /tmp/materials/profile.p7b
+          printf '%s' "$KEY_B64" | base64 -d > /tmp/materials/key.p12
+          shopt -s nullglob
+          for hap in dist/*.hap; do
+            base="$(basename "$hap" .hap)"
+            java -jar "$HAP_SIGN_TOOL" sign-app \
+              -keyAlias "$KEY_ALIAS" \
+              -signAlg "SHA256withECDSA" \
+              -mode "localSign" \
+              -appCertFile /tmp/materials/cert.cer \
+              -profileFile /tmp/materials/profile.p7b \
+              -inFile "$hap" \
+              -keystoreFile /tmp/materials/key.p12 \
+              -outFile "dist/${base}-signed.hap" \
+              -keyPwd "$KEY_PWD" \
+              -keystorePwd "$KEYSTORE_PWD" \
+              -signCode "1"
+          done
+          rm -rf /tmp/materials
+          ls -l dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hap
+          path: dist/*.hap
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish rolling release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          name: Folo for HarmonyOS (nightly)
+          prerelease: true
+          make_latest: true
+          body: |
+            Folo 鸿蒙版（ArkTS 外壳 + 网页内核）。
+
+            安装前需要用你的开发者证书签名：未签名 HAP 不能直接装到鸿蒙手机上。
+
+            未配置签名 Secrets 时这里是 unsigned HAP；配置 `SIGNING_CERT` / `SIGNING_PROFILE` /
+            `SIGNING_KEY` / `SIGNING_KEY_ALIAS` / `KEYSTORE_PASSWORD` / `KEY_PASSWORD`
+            之后会自动产出 `-signed.hap`。
+          files: dist/*.hap
