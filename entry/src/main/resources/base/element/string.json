@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "Folo for HarmonyOS"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "Folo reader with your own AI provider"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "Folo"
+    }
+  ]
+}

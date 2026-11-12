@@ -1,0 +1,4 @@
+# Keep the entry page and ability names readable in release builds.
+-enable-property-obfuscation
+-enable-toplevel-obfuscation
+-keep-global-name
